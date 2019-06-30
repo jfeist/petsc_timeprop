@@ -1,0 +1,17 @@
+*~
+.DS_Store
+
+*.o
+*.mod
+*.pyc
+*.jpg
+*.dat
+*.so
+*.exe
+*.il
+TAGS
+
+# ignore plotfiles and plots in the src directory
+*.gnup
+*.pdf
+*.dSYM/
