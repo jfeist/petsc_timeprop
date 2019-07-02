@@ -3,7 +3,6 @@ all : test.exe
 clean ::
 	rm -f *.o *.exe
 
-
 include ${PETSC_DIR}/lib/petsc/conf/variables
 include ${PETSC_DIR}/lib/petsc/conf/rules
 
