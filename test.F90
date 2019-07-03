@@ -6,7 +6,7 @@ PROGRAM main
 
   Mat            :: HH, HZ, miH, Hperm, Zperm
   PetscViewer    :: binv
-  PetscScalar    :: E0, z0
+  PetscScalar    :: E0, z0, miE0
   Vec            :: vec0, zvec0, Hvec0, vectmp
   MatPartitioning:: part
   IS             :: is,isg,perm
@@ -15,6 +15,7 @@ PROGRAM main
   PetscErrorCode :: ierr
   integer        :: my_id
   double precision :: tt
+  double complex, parameter :: IU = (0.d0,1.d0)
 
   call PetscInitialize(PETSC_NULL_CHARACTER, ierr)
   call MPI_COMM_RANK(PETSC_COMM_WORLD, my_id, ierr)
@@ -36,8 +37,6 @@ PROGRAM main
   call MatCreateVecs(HH,PETSC_NULL_VEC,vectmp,ierr);CHKERRA(ierr)
   call VecSetFromOptions(vectmp,ierr);CHKERRA(ierr)
 
-  if (my_id==0) write(0,*) 'still here 4400'
-
   call PetscViewerBinaryOpen(PETSC_COMM_WORLD,"HZ.petsc",FILE_MODE_READ,binv,ierr);CHKERRA(ierr)
   call MatLoad(HZ,binv,ierr);CHKERRA(ierr)
   call PetscViewerDestroy(binv,ierr);CHKERRA(ierr)
@@ -56,13 +55,9 @@ PROGRAM main
   call MatDestroy(HH,ierr);
   HH = Hperm;
 
-  if (my_id==0) write(0,*) 'still here 6900'
-
   call MatCreateSubMatrix(HZ,perm,perm,MAT_INITIAL_MATRIX,Zperm,ierr);CHKERRA(ierr)
   call MatDestroy(HZ,ierr);
   HZ = Zperm;
-
-  if (my_id==0) write(0,*) 'still here 7500'
 
   call MatCreateVecs(HH,PETSC_NULL_VEC, vec0,ierr);CHKERRA(ierr)
   call MatCreateVecs(HH,PETSC_NULL_VEC,zvec0,ierr);CHKERRA(ierr)
@@ -71,8 +66,6 @@ PROGRAM main
   call VecSetFromOptions( vec0,ierr);CHKERRA(ierr)
   call VecSetFromOptions(zvec0,ierr);CHKERRA(ierr)
   call VecSetFromOptions(Hvec0,ierr);CHKERRA(ierr)
-
-  if (my_id==0) write(0,*) 'still here 8500'
 
   call PetscViewerBinaryOpen(PETSC_COMM_WORLD,'vec0.petsc',FILE_MODE_READ,binv,ierr);CHKERRA(ierr)
   call VecLoad(vectmp,binv,ierr);CHKERRA(ierr)
@@ -84,24 +77,31 @@ PROGRAM main
   call VecScatterDestroy(scatt,ierr);CHKERRA(ierr)
 
   call MatDuplicate(HH,MAT_COPY_VALUES,miH,ierr);CHKERRA(ierr)
-  call MatScale(miH,(0.d0,-1.d0),ierr);CHKERRA(ierr)
+  call MatScale(miH,-IU,ierr);CHKERRA(ierr)
 
   ! warmup CUDA (compile CUDA kernels?)
   call MatMult(HH, vec0,Hvec0,ierr);CHKERRA(ierr)
   call MatMult(HZ, vec0,zvec0,ierr);CHKERRA(ierr)
   call MatMult(miH,vec0,Hvec0,ierr);CHKERRA(ierr)
-  call VecDot(vec0,Hvec0,E0,ierr);CHKERRA(ierr)
-  call VecDot(vec0,zvec0,z0,ierr);CHKERRA(ierr)
+  ! WARNING: PETSc conjugates the SECOND vector argument, i.e., to get <x|y>, we have to call VecDot(y,x)
+  ! https://www.mcs.anl.gov/petsc/petsc-current/docs/manualpages/Vec/VecDot.html
+  call VecDot(Hvec0,vec0,E0,ierr);CHKERRA(ierr)
+  call VecDot(zvec0,vec0,z0,ierr);CHKERRA(ierr)
 
   tt = mpi_wtime()
   call MatMult(HH,vec0,Hvec0,ierr);CHKERRA(ierr)
   call MatMult(HZ,vec0,zvec0,ierr);CHKERRA(ierr)
-  call VecDot(vec0,Hvec0,E0,ierr);CHKERRA(ierr)
-  call VecDot(vec0,zvec0,z0,ierr);CHKERRA(ierr)
+  call VecDot(Hvec0,vec0,E0,ierr);CHKERRA(ierr)
+  call VecDot(zvec0,vec0,z0,ierr);CHKERRA(ierr)
   call MatMult(miH,vec0,Hvec0,ierr);CHKERRA(ierr)
-  if (my_id==0) write(6,*) 'time taken:', mpi_wtime() - tt
-  if (my_id==0) write(6,*) 'E0 =', E0
-  if (my_id==0) write(6,*) '<z> =', z0
+  call VecDot(Hvec0,vec0,miE0,ierr);CHKERRA(ierr)
+  
+  if (my_id==0) then
+    write(6,*) 'time for 3 MatMults:', mpi_wtime() - tt
+    write(6,*) 'E0 =', E0
+    write(6,*) '<-iH>/-i =', IU * miE0
+    write(6,*) '<z> =', z0
+  endif
 
   call TSCreate(PETSC_COMM_WORLD,ts,ierr);CHKERRA(ierr)
   call TSSetSolution(ts,zvec0,ierr);CHKERRA(ierr)
