@@ -4,13 +4,14 @@ PROGRAM main
   use petsc
   IMPLICIT NONE
 
-  Mat            :: HH, HZ, Hperm, Zperm
+  Mat            :: HH, HZ, miH, Hperm, Zperm
   PetscViewer    :: binv
   PetscScalar    :: E0, z0
   Vec            :: vec0, zvec0, Hvec0, vectmp
   MatPartitioning:: part
   IS             :: is,isg,perm
   VecScatter     :: scatt
+  TS             :: ts
   PetscErrorCode :: ierr
   integer        :: my_id
   double precision :: tt
@@ -23,6 +24,7 @@ PROGRAM main
   ! - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
   call MatCreate(PETSC_COMM_WORLD,HH,ierr);CHKERRA(ierr)
   call MatCreate(PETSC_COMM_WORLD,HZ,ierr);CHKERRA(ierr)
+  call MatCreate(PETSC_COMM_WORLD,miH,ierr);CHKERRA(ierr)
 
   call MatSetFromOptions(HH,ierr);CHKERRA(ierr)
   call MatSetFromOptions(HZ,ierr);CHKERRA(ierr)
@@ -81,9 +83,13 @@ PROGRAM main
   call VecDestroy(vectmp,ierr);CHKERRA(ierr)
   call VecScatterDestroy(scatt,ierr);CHKERRA(ierr)
 
+  call MatDuplicate(HH,MAT_COPY_VALUES,miH,ierr);CHKERRA(ierr)
+  call MatScale(miH,(0.d0,-1.d0),ierr);CHKERRA(ierr)
+
   ! warmup CUDA (compile CUDA kernels?)
-  call MatMult(HH,vec0,Hvec0,ierr);CHKERRA(ierr)
-  call MatMult(HZ,vec0,zvec0,ierr);CHKERRA(ierr)
+  call MatMult(HH, vec0,Hvec0,ierr);CHKERRA(ierr)
+  call MatMult(HZ, vec0,zvec0,ierr);CHKERRA(ierr)
+  call MatMult(miH,vec0,Hvec0,ierr);CHKERRA(ierr)
   call VecDot(vec0,Hvec0,E0,ierr);CHKERRA(ierr)
   call VecDot(vec0,zvec0,z0,ierr);CHKERRA(ierr)
 
@@ -92,9 +98,21 @@ PROGRAM main
   call MatMult(HZ,vec0,zvec0,ierr);CHKERRA(ierr)
   call VecDot(vec0,Hvec0,E0,ierr);CHKERRA(ierr)
   call VecDot(vec0,zvec0,z0,ierr);CHKERRA(ierr)
+  call MatMult(miH,vec0,Hvec0,ierr);CHKERRA(ierr)
   if (my_id==0) write(6,*) 'time taken:', mpi_wtime() - tt
   if (my_id==0) write(6,*) 'E0 =', E0
   if (my_id==0) write(6,*) '<z> =', z0
+
+  call TSCreate(PETSC_COMM_WORLD,ts,ierr);CHKERRA(ierr)
+  call TSSetSolution(ts,zvec0,ierr);CHKERRA(ierr)
+  call TSSetProblemType(ts,TS_LINEAR,ierr);CHKERRA(ierr)
+  call TSSetRHSFunction(ts,PETSC_NULL_VEC,TSComputeRHSFunctionLinear,PETSC_NULL_FUNCTION,ierr);CHKERRA(ierr)
+  call TSSetRHSJacobian(ts,miH,miH,TSComputeRHSJacobianConstant,PETSC_NULL_FUNCTION,ierr);CHKERRA(ierr)
+  !call TSSetIFunction(ts,PETSC_NULL_VEC,TSComputeIFunctionLinear,PETSC_NULL_FUNCTION,ierr);CHKERRA(ierr)
+  !call TSSetIJacobian(ts,miH,miH,TSComputeIJacobianConstant,PETSC_NULL_FUNCTION,ierr);CHKERRA(ierr)
+  call TSSetFromOptions(ts,ierr);CHKERRA(ierr)
+
+  call TSSolve(ts,Hvec0,ierr);CHKERRA(ierr)
 
   call PetscFinalize(ierr);CHKERRA(ierr)
 END PROGRAM main
