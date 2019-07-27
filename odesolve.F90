@@ -21,6 +21,8 @@ PROGRAM main
   call PetscInitialize(PETSC_NULL_CHARACTER, ierr)
   call MPI_COMM_RANK(PETSC_COMM_WORLD, my_id, ierr)
 
+  if (my_id==0) write(6,*) 'time for initialization:', mpi_wtime() - tstart
+
   ! - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
   !  load the matrix from disk
   ! - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -39,8 +41,9 @@ PROGRAM main
   call PetscViewerDestroy(binv,ierr);CHKERRA(ierr)
   
   call read_realarray('times.petsc',times)
-
-  tt = mpi_wtime()
+  if (times(1)/=0.d0) then
+     SETERRA(PETSC_COMM_SELF,8,"first time in times.petsc must be 0!")
+  end if
 
   call TSCreate(PETSC_COMM_WORLD,ts,ierr);CHKERRA(ierr)
   call TSSetSolution(ts,u0,ierr);CHKERRA(ierr)
@@ -52,12 +55,11 @@ PROGRAM main
   call TSSetExactFinalTime(ts,TS_EXACTFINALTIME_MATCHSTEP,ierr);CHKERRA(ierr)
   call TSSetFromOptions(ts,ierr);CHKERRA(ierr)
 
-  if (times(1)/=0.d0) then
-     SETERRA(PETSC_COMM_SELF,8,"first time in times.petsc must be 0!")
-  end if
+  if (my_id==0) write(6,*) 'time for loading problem etc:', mpi_wtime() - tstart
+
+  tt = mpi_wtime()
   call PetscViewerBinaryOpen(PETSC_COMM_WORLD,'usol.petsc',FILE_MODE_WRITE,binv,ierr);CHKERRA(ierr)
   call VecView(u0,binv,ierr);CHKERRA(ierr)
-
   do ii = 2, size(times)
      call TSSetMaxTime(ts,times(ii),ierr);CHKERRA(ierr)
      call TSSolve(ts,u0,ierr);CHKERRA(ierr)
@@ -65,7 +67,6 @@ PROGRAM main
      call TSGetStepNumber(ts,steps,ierr);CHKERRA(ierr)
      if (my_id==0) write(6,'(A,G12.4,A,G12.4,A,I8,A)') 'propagated until t = ', times(ii), ' in ', mpi_wtime()-tt, ' seconds with ', steps, ' timesteps'
   end do
-
   call PetscViewerDestroy(binv,ierr);CHKERRA(ierr)
 
   if (my_id==0) then
