@@ -8,10 +8,8 @@ PROGRAM main
 
   Mat            :: A
   PetscViewer    :: binv
-  Vec            :: u0, v_times, v_times_seq
-  VecScatter     :: ctx
+  Vec            :: u0
   TS             :: ts
-  PetscScalar, pointer :: times_scalar(:)
   PetscErrorCode :: ierr
   PetscInt       :: steps
   integer        :: my_id, ii
@@ -39,23 +37,8 @@ PROGRAM main
   call PetscViewerBinaryOpen(PETSC_COMM_WORLD,'u0.petsc',FILE_MODE_READ,binv,ierr);CHKERRA(ierr)
   call VecLoad(u0,binv,ierr);CHKERRA(ierr)
   call PetscViewerDestroy(binv,ierr);CHKERRA(ierr)
-
-  call VecCreate(PETSC_COMM_WORLD,v_times,ierr);CHKERRA(ierr)
-  call PetscViewerBinaryOpen(PETSC_COMM_WORLD,'times.petsc',FILE_MODE_READ,binv,ierr);CHKERRA(ierr)
-  call VecLoad(v_times,binv,ierr);CHKERRA(ierr)
-  call PetscViewerDestroy(binv,ierr);CHKERRA(ierr)
-
-  call VecScatterCreateToAll(v_times,ctx,v_times_seq,ierr);CHKERRA(ierr)
-  call VecScatterBegin(ctx,v_times,v_times_seq,INSERT_VALUES,SCATTER_FORWARD,ierr);CHKERRA(ierr)
-  call VecScatterEnd(ctx,v_times,v_times_seq,INSERT_VALUES,SCATTER_FORWARD,ierr);CHKERRA(ierr)
-  call VecScatterDestroy(ctx,ierr);CHKERRA(ierr)
-  call VecGetArrayReadF90(v_times_seq,times_scalar,ierr);CHKERRA(ierr)
-  allocate(times(size(times_scalar)))
-  ! copy from complex to real
-  times = times_scalar
-  call VecRestoreArrayReadF90(v_times_seq,times_scalar,ierr);CHKERRA(ierr)
-  call VecDestroy(v_times_seq,ierr);CHKERRA(ierr)
-  call VecDestroy(v_times,ierr);CHKERRA(ierr)
+  
+  call read_realarray('times.petsc',times)
 
   tt = mpi_wtime()
 
@@ -91,4 +74,33 @@ PROGRAM main
   endif
 
   call PetscFinalize(ierr);CHKERRA(ierr)
+
+contains
+  subroutine read_realarray(filename,x)
+    character(len=*) :: filename
+    Vec          :: vx, vx_seq
+    PetscViewer  :: viewer
+    VecScatter   :: ctx
+    PetscScalar, pointer :: x_scalar(:)
+    double precision, allocatable :: x(:)
+
+    ! read from filename into a (distributed) petsc vector
+    call VecCreate(PETSC_COMM_WORLD,vx,ierr);CHKERRA(ierr)
+    call PetscViewerBinaryOpen(PETSC_COMM_WORLD,filename,FILE_MODE_READ,viewer,ierr);CHKERRA(ierr)
+    call VecLoad(vx,viewer,ierr);CHKERRA(ierr)
+    call PetscViewerDestroy(viewer,ierr);CHKERRA(ierr)
+
+    call VecScatterCreateToAll(vx,ctx,vx_seq,ierr);CHKERRA(ierr)
+    call VecScatterBegin(ctx,vx,vx_seq,INSERT_VALUES,SCATTER_FORWARD,ierr);CHKERRA(ierr)
+    call VecScatterEnd(ctx,vx,vx_seq,INSERT_VALUES,SCATTER_FORWARD,ierr);CHKERRA(ierr)
+    call VecScatterDestroy(ctx,ierr);CHKERRA(ierr)
+
+    call VecGetArrayReadF90(vx_seq,x_scalar,ierr);CHKERRA(ierr)
+    allocate(x(size(x_scalar)))
+    ! copy from complex to real
+    x = x_scalar
+    call VecRestoreArrayReadF90(vx_seq,x_scalar,ierr);CHKERRA(ierr)
+    call VecDestroy(vx_seq,ierr);CHKERRA(ierr)
+    call VecDestroy(vx,ierr);CHKERRA(ierr)    
+  end subroutine read_realarray
 END PROGRAM main
