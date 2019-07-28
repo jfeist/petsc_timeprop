@@ -1,12 +1,11 @@
-all : test.exe odesolve.exe linsolve.exe
+all : test.exe odesolve.exe linsolve.exe odesolve_slepc.exe
 
 clean ::
 	rm -f *.o *.exe
 
-include ${PETSC_DIR}/lib/petsc/conf/variables
-include ${PETSC_DIR}/lib/petsc/conf/rules
+include ${SLEPC_DIR}/lib/slepc/conf/slepc_common
 
 # FC_FLAGS := $(filter-out -Wall,${FC_FLAGS}) -ffree-line-length-none
 
 %.exe: %.o
-	-${FLINKER} -o $@ $< ${PETSC_LIB}
+	-${FLINKER} -o $@ $< ${SLEPC_LIB}
