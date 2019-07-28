@@ -1,4 +1,4 @@
-all : test.exe odesolve.exe
+all : test.exe odesolve.exe linsolve.exe
 
 clean ::
 	rm -f *.o *.exe
