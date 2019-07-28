@@ -113,7 +113,8 @@ subroutine LinearIFunction(ts,t,X,Xdot,F,user,ierr)
   ! we use the (arbitrary) user context to simply pass the matrix A
   use petsc
   implicit none
-
+  
+  PetscScalar, parameter :: ONE = 1.d0
   TS ts
   PetscReal t
   Vec X,Xdot,F
@@ -124,7 +125,7 @@ subroutine LinearIFunction(ts,t,X,Xdot,F,user,ierr)
   ! F = A X
   call MatMult(user,X,F,ierr);CHKERRA(ierr)
   ! F = Xdot - F = Xdot - A X
-  call VecAYPX(F,(-1.d0,0.d0),Xdot,ierr);CHKERRA(ierr)
+  call VecAYPX(F,-ONE,Xdot,ierr);CHKERRA(ierr)
 end subroutine LinearIFunction
 
 subroutine LinearIJacobian(ts,t,X,Xdot,shift,J,Jpre,user,ierr)
@@ -132,6 +133,7 @@ subroutine LinearIJacobian(ts,t,X,Xdot,shift,J,Jpre,user,ierr)
   use petsc
   implicit none
 
+  PetscScalar, parameter :: ONE = 1.d0
   TS ts
   PetscReal t,shift
   PetscScalar shift_scalar
@@ -146,7 +148,7 @@ subroutine LinearIJacobian(ts,t,X,Xdot,shift,J,Jpre,user,ierr)
 
   shift_scalar = shift
   call MatCopy(user,J,SAME_NONZERO_PATTERN,ierr);CHKERRA(ierr)
-  call MatScale(J,(-1.d0,0.d0),ierr);CHKERRA(ierr)
+  call MatScale(J,-ONE,ierr);CHKERRA(ierr)
   call MatShift(J,shift_scalar,ierr);CHKERRA(ierr)
   if (J /= Jpre) then
      call MatCopy(J,Jpre,SAME_NONZERO_PATTERN,ierr);CHKERRA(ierr)
