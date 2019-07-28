@@ -6,7 +6,7 @@ PROGRAM main
 
   ! solve d_t u = A u
 
-  Mat            :: A
+  Mat            :: A, J
   PetscViewer    :: binv
   Vec            :: u0
   TS             :: ts
@@ -15,6 +15,8 @@ PROGRAM main
   integer        :: my_id, ii
   double precision :: tt, tstart
   double precision, allocatable :: times(:)
+
+  external :: LinearIFunction, LinearIJacobian
 
   tstart = mpi_wtime()
 
@@ -32,6 +34,7 @@ PROGRAM main
   call PetscViewerBinaryOpen(PETSC_COMM_WORLD,"A.petsc",FILE_MODE_READ,binv,ierr);CHKERRA(ierr)
   call MatLoad(A,binv,ierr);CHKERRA(ierr)
   call PetscViewerDestroy(binv,ierr);CHKERRA(ierr)
+  call MatDuplicate(A,MAT_COPY_VALUES,J,ierr);CHKERRA(ierr)
 
   call MatCreateVecs(A,PETSC_NULL_VEC,u0,ierr);CHKERRA(ierr)
   call VecSetFromOptions(u0,ierr);CHKERRA(ierr)
@@ -50,8 +53,8 @@ PROGRAM main
   call TSSetProblemType(ts,TS_LINEAR,ierr);CHKERRA(ierr)
   call TSSetRHSFunction(ts,PETSC_NULL_VEC,TSComputeRHSFunctionLinear,PETSC_NULL_FUNCTION,ierr);CHKERRA(ierr)
   call TSSetRHSJacobian(ts,A,A,TSComputeRHSJacobianConstant,PETSC_NULL_FUNCTION,ierr);CHKERRA(ierr)
-  !call TSSetIFunction(ts,PETSC_NULL_VEC,TSComputeIFunctionLinear,PETSC_NULL_FUNCTION,ierr);CHKERRA(ierr)
-  !call TSSetIJacobian(ts,A,A,TSComputeIJacobianConstant,PETSC_NULL_FUNCTION,ierr);CHKERRA(ierr)
+  !call TSSetIFunction(ts,PETSC_NULL_VEC,LinearIFunction,A,ierr);CHKERRA(ierr)
+  !call TSSetIJacobian(ts,J,J,LinearIJacobian,A,ierr);CHKERRA(ierr)
   call TSSetExactFinalTime(ts,TS_EXACTFINALTIME_MATCHSTEP,ierr);CHKERRA(ierr)
   call TSSetFromOptions(ts,ierr);CHKERRA(ierr)
 
@@ -105,3 +108,47 @@ contains
     call VecDestroy(vx,ierr);CHKERRA(ierr)    
   end subroutine read_realarray
 END PROGRAM main
+
+subroutine LinearIFunction(ts,t,X,Xdot,F,user,ierr)
+  ! we use the (arbitrary) user context to simply pass the matrix A
+  use petsc
+  implicit none
+
+  TS ts
+  PetscReal t
+  Vec X,Xdot,F
+  Mat user
+  PetscErrorCode ierr
+
+  ! we want to represent Xdot = A X in its implicit formulation, F = Xdot - A X
+  ! F = A X
+  call MatMult(user,X,F,ierr);CHKERRA(ierr)
+  ! F = Xdot - F = Xdot - A X
+  call VecAYPX(F,(-1.d0,0.d0),Xdot,ierr);CHKERRA(ierr)
+end subroutine LinearIFunction
+
+subroutine LinearIJacobian(ts,t,X,Xdot,shift,J,Jpre,user,ierr)
+  ! we use the (arbitrary) user context to simply pass the matrix A
+  use petsc
+  implicit none
+
+  TS ts
+  PetscReal t,shift
+  PetscScalar shift_scalar
+  Vec X,Xdot
+  Mat J,Jpre
+  Mat user
+  PetscErrorCode ierr
+
+  ! should calculate Jacobian of F(t,X,W+a*X), equivalent to dF/dX + a*dF/dXdot
+  ! F = Xdot - A X -> dF/dX = -A, dF/dXdot = I
+  ! J = -A + a I
+
+  shift_scalar = shift
+  call MatCopy(user,J,SAME_NONZERO_PATTERN,ierr);CHKERRA(ierr)
+  call MatScale(J,(-1.d0,0.d0),ierr);CHKERRA(ierr)
+  call MatShift(J,shift_scalar,ierr);CHKERRA(ierr)
+  if (J /= Jpre) then
+     call MatCopy(J,Jpre,SAME_NONZERO_PATTERN,ierr);CHKERRA(ierr)
+  end if
+end subroutine LinearIJacobian
