@@ -1,22 +1,35 @@
 #include "petsc/finclude/petsc.h"
 
+module td_type
+  use petsc
+  type td_data
+    Mat A0, At
+    Vec Atu
+    PetscScalar last_Et_jac
+  end type
+end module
+
 PROGRAM main
   use petsc
+  use laserfields, only: laserfields_read_parameters
+  use td_type
   IMPLICIT NONE
 
   ! solve d_t u = A u
 
-  Mat            :: A, J
+  Mat            :: J
+  type(td_data)  :: user
   PetscViewer    :: binv
   Vec            :: u0
   TS             :: ts
   PetscErrorCode :: ierr
   PetscInt       :: steps
-  integer        :: my_id, ii
+  PetscScalar    :: alpha
+  integer        :: my_id, ii, ntimes
   double precision :: tt, tstart
   double precision, allocatable :: times(:)
 
-  external :: LinearIFunction, LinearIJacobian
+  external :: LinearIFunction, LinearIJacobian, TDHamiltRHSFunction, TDHamiltJacFunction
 
   tstart = mpi_wtime()
 
@@ -26,33 +39,35 @@ PROGRAM main
   if (my_id==0) write(6,*) 'time for initialization:', mpi_wtime() - tstart
 
   ! - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-  !  load the matrix from disk
+  !  load the input from disk
   ! - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-  call MatCreate(PETSC_COMM_WORLD,A,ierr);CHKERRA(ierr)
-  call MatSetFromOptions(A,ierr);CHKERRA(ierr)
+  call laserfields_read_parameters('laserfields.in')
+  call load_mat(user%A0,"A0.petsc")
+  call load_mat(user%At,"At.petsc")
+  call load_vec(u0,"u0.petsc")
+  call load_array(times,"times.in")
 
-  call PetscViewerBinaryOpen(PETSC_COMM_WORLD,"A.petsc",FILE_MODE_READ,binv,ierr);CHKERRA(ierr)
-  call MatLoad(A,binv,ierr);CHKERRA(ierr)
-  call PetscViewerDestroy(binv,ierr);CHKERRA(ierr)
-  call MatDuplicate(A,MAT_COPY_VALUES,J,ierr);CHKERRA(ierr)
+  ! - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+  !  set up some storage
+  ! - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+  ! temp vector used in Hamiltonian application
+  call MatCreateVecs(user%A0,PETSC_NULL_VEC,user%Atu,ierr);CHKERRA(ierr)
+  call VecSetFromOptions(user%Atu,ierr);CHKERRA(ierr)
 
-  call MatCreateVecs(A,PETSC_NULL_VEC,u0,ierr);CHKERRA(ierr)
-  call VecSetFromOptions(u0,ierr);CHKERRA(ierr)
+  ! Jacobian
+  call MatDuplicate(user%A0,MAT_COPY_VALUES,J,ierr);CHKERRA(ierr)
+  user%last_Et_jac = 1.d0
+  call MatAXPY(J,user%last_Et_jac,user%At,DIFFERENT_NONZERO_PATTERN,ierr);CHKERRA(ierr)
 
-  call PetscViewerBinaryOpen(PETSC_COMM_WORLD,'u0.petsc',FILE_MODE_READ,binv,ierr);CHKERRA(ierr)
-  call VecLoad(u0,binv,ierr);CHKERRA(ierr)
-  call PetscViewerDestroy(binv,ierr);CHKERRA(ierr)
-  
-  call read_realarray('times.petsc',times)
-  if (times(1)/=0.d0) then
-     SETERRA(PETSC_COMM_SELF,8,"first time in times.petsc must be 0!")
-  end if
+  if (my_id==0) write(0,*) 'time for loading matrices:', mpi_wtime() - tstart
 
   call TSCreate(PETSC_COMM_WORLD,ts,ierr);CHKERRA(ierr)
+  call TSSetTime(ts,times(1),ierr);CHKERRA(ierr)
   call TSSetSolution(ts,u0,ierr);CHKERRA(ierr)
   call TSSetProblemType(ts,TS_LINEAR,ierr);CHKERRA(ierr)
-  call TSSetRHSFunction(ts,PETSC_NULL_VEC,TSComputeRHSFunctionLinear,PETSC_NULL_FUNCTION,ierr);CHKERRA(ierr)
-  call TSSetRHSJacobian(ts,A,A,TSComputeRHSJacobianConstant,PETSC_NULL_FUNCTION,ierr);CHKERRA(ierr)
+  call TSSetRHSFunction(ts,PETSC_NULL_VEC,TDHamiltRHSFunction,user,ierr);CHKERRA(ierr)
+  call TSSetRHSJacobian(ts,J,J,TDHamiltJacFunction,user,ierr);CHKERRA(ierr)
+  call TSRHSJacobianSetReuse(ts,PETSC_TRUE,ierr);CHKERRA(ierr)
   !call TSSetIFunction(ts,PETSC_NULL_VEC,LinearIFunction,A,ierr);CHKERRA(ierr)
   !call TSSetIJacobian(ts,J,J,LinearIJacobian,A,ierr);CHKERRA(ierr)
   call TSSetExactFinalTime(ts,TS_EXACTFINALTIME_MATCHSTEP,ierr);CHKERRA(ierr)
@@ -107,7 +122,79 @@ contains
     call VecDestroy(vx_seq,ierr);CHKERRA(ierr)
     call VecDestroy(vx,ierr);CHKERRA(ierr)    
   end subroutine read_realarray
+
+  subroutine load_array(arr,filename)
+    double precision, allocatable :: arr(:)
+    character(len=*) :: filename
+    integer :: nn
+    open(123,file=filename,status='old',action='read')
+    read(123,*) nn
+    allocate(arr(nn))
+    read(123,*) arr
+    close(123)
+  end
+
+  subroutine load_mat(A,filename)
+    Mat              :: A
+    character(len=*) :: filename
+    call MatCreate(PETSC_COMM_WORLD,A,ierr);CHKERRA(ierr)
+    call MatSetFromOptions(A,ierr);CHKERRA(ierr)
+    call PetscViewerBinaryOpen(PETSC_COMM_WORLD,filename,FILE_MODE_READ,binv,ierr);CHKERRA(ierr)
+    call MatLoad(A,binv,ierr);CHKERRA(ierr)
+    call PetscViewerDestroy(binv,ierr);CHKERRA(ierr)
+  end subroutine
+
+  subroutine load_vec(u,filename)
+    Vec              :: u
+    character(len=*) :: filename
+    call VecCreate(PETSC_COMM_WORLD,u,ierr);CHKERRA(ierr)
+    call VecSetFromOptions(u,ierr);CHKERRA(ierr)
+    call PetscViewerBinaryOpen(PETSC_COMM_WORLD,filename,FILE_MODE_READ,binv,ierr);CHKERRA(ierr)
+    call VecLoad(u,binv,ierr);CHKERRA(ierr)
+    call PetscViewerDestroy(binv,ierr);CHKERRA(ierr)
+  end subroutine
 END PROGRAM main
+
+! PetscErrorCode func (TS ts,PetscReal t,Vec u,Vec F,void *ctx);
+! t	- current timestep
+! u	- input vector
+! F	- function vector
+! ctx	- [optional] user-defined function context
+subroutine TDHamiltRHSFunction(ts,t,u,F,user,ierr)
+  use td_type
+  use laserfields, only: get_EL
+  implicit none
+  ! evaluate F = (A0 + E(t)*At)*u
+  TS ts
+  PetscReal t
+  Vec u, F
+  type(td_data) user
+  PetscErrorCode ierr
+  PetscScalar Et
+
+  Et = get_El(t)
+  call MatMult(user%A0,u,F,ierr);CHKERRA(ierr)
+  call MatMult(user%At,u,user%Atu,ierr);CHKERRA(ierr)
+  call VecAXPY(F,Et,user%Atu,ierr);CHKERRA(ierr)
+end
+
+! PetscErrorCode func (TS ts,PetscReal t,Vec u,Mat A,Mat B,void *ctx);
+subroutine TDHamiltJacFunction(ts,t,u,A,B,user,ierr)
+  use td_type
+  use laserfields, only: get_EL
+  implicit none
+  ! evaluate F = (A0 + E(t)*At)*u
+  TS ts
+  PetscReal t
+  Vec u
+  Mat A, B
+  type(td_data) user
+  PetscErrorCode ierr
+
+  call MatAXPY(A,-user%last_Et_jac,user%At,SUBSET_NONZERO_PATTERN,ierr);CHKERRA(ierr)
+  user%last_Et_jac = get_EL(t)
+  call MatAXPY(A,  user%last_Et_jac,user%At,SUBSET_NONZERO_PATTERN,ierr);CHKERRA(ierr)
+end
 
 subroutine LinearIFunction(ts,t,X,Xdot,F,user,ierr)
   ! we use the (arbitrary) user context to simply pass the matrix A
