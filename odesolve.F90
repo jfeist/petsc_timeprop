@@ -5,7 +5,7 @@ module td_type
   type td_data
     Mat A0, At
     Vec Atu
-    PetscScalar last_Et_jac
+    PetscScalar last_At_jac
   end type
 end module
 
@@ -29,7 +29,7 @@ PROGRAM main
   double precision :: tt, tstart
   double precision, allocatable :: times(:)
 
-  external :: LinearIFunction, LinearIJacobian, TDHamiltRHSFunction, TDHamiltJacFunction
+  external :: TDLinearIFunction, TDLinearIJacobian, TDHamiltRHSFunction, TDHamiltJacFunction
 
   tstart = mpi_wtime()
 
@@ -56,8 +56,8 @@ PROGRAM main
 
   ! Jacobian
   call MatDuplicate(user%A0,MAT_COPY_VALUES,J,ierr);CHKERRA(ierr)
-  user%last_Et_jac = 1.d0
-  call MatAXPY(J,user%last_Et_jac,user%At,DIFFERENT_NONZERO_PATTERN,ierr);CHKERRA(ierr)
+  user%last_At_jac = 1.d0
+  call MatAXPY(J,user%last_At_jac,user%At,DIFFERENT_NONZERO_PATTERN,ierr);CHKERRA(ierr)
 
   if (my_id==0) write(0,*) 'time for loading matrices:', mpi_wtime() - tstart
 
@@ -66,10 +66,11 @@ PROGRAM main
   call TSSetSolution(ts,u0,ierr);CHKERRA(ierr)
   call TSSetProblemType(ts,TS_LINEAR,ierr);CHKERRA(ierr)
   call TSSetRHSFunction(ts,PETSC_NULL_VEC,TDHamiltRHSFunction,user,ierr);CHKERRA(ierr)
-  call TSSetRHSJacobian(ts,J,J,TDHamiltJacFunction,user,ierr);CHKERRA(ierr)
-  call TSRHSJacobianSetReuse(ts,PETSC_TRUE,ierr);CHKERRA(ierr)
-  !call TSSetIFunction(ts,PETSC_NULL_VEC,LinearIFunction,A,ierr);CHKERRA(ierr)
-  !call TSSetIJacobian(ts,J,J,LinearIJacobian,A,ierr);CHKERRA(ierr)
+  !call TSSetRHSJacobian(ts,J,J,TDHamiltJacFunction,user,ierr);CHKERRA(ierr)
+  !call TSRHSJacobianSetReuse(ts,PETSC_TRUE,ierr);CHKERRA(ierr)
+  !call TSSetIFunction(ts,PETSC_NULL_VEC,TDLinearIFunction,user,ierr);CHKERRA(ierr)
+  !call TSSetIFunction(ts,PETSC_NULL_VEC,TSComputeIFunctionLinear,user,ierr);CHKERRA(ierr)
+  !call TSSetIJacobian(ts,J,J,TDLinearIJacobian,user,ierr);CHKERRA(ierr)
   call TSSetExactFinalTime(ts,TS_EXACTFINALTIME_MATCHSTEP,ierr);CHKERRA(ierr)
   call TSSetFromOptions(ts,ierr);CHKERRA(ierr)
 
@@ -162,7 +163,7 @@ END PROGRAM main
 ! ctx	- [optional] user-defined function context
 subroutine TDHamiltRHSFunction(ts,t,u,F,user,ierr)
   use td_type
-  use laserfields, only: get_EL
+  use laserfields, only: get_AL
   implicit none
   ! evaluate F = (A0 + E(t)*At)*u
   TS ts
@@ -170,18 +171,18 @@ subroutine TDHamiltRHSFunction(ts,t,u,F,user,ierr)
   Vec u, F
   type(td_data) user
   PetscErrorCode ierr
-  PetscScalar Et
+  PetscScalar At
 
-  Et = get_El(t)
+  At = get_Al(t)
   call MatMult(user%A0,u,F,ierr);CHKERRA(ierr)
   call MatMult(user%At,u,user%Atu,ierr);CHKERRA(ierr)
-  call VecAXPY(F,Et,user%Atu,ierr);CHKERRA(ierr)
+  call VecAXPY(F,At,user%Atu,ierr);CHKERRA(ierr)
 end
 
 ! PetscErrorCode func (TS ts,PetscReal t,Vec u,Mat A,Mat B,void *ctx);
 subroutine TDHamiltJacFunction(ts,t,u,A,B,user,ierr)
   use td_type
-  use laserfields, only: get_EL
+  use laserfields, only: get_AL
   implicit none
   ! evaluate F = (A0 + E(t)*At)*u
   TS ts
@@ -191,53 +192,59 @@ subroutine TDHamiltJacFunction(ts,t,u,A,B,user,ierr)
   type(td_data) user
   PetscErrorCode ierr
 
-  call MatAXPY(A,-user%last_Et_jac,user%At,SUBSET_NONZERO_PATTERN,ierr);CHKERRA(ierr)
-  user%last_Et_jac = get_EL(t)
-  call MatAXPY(A,  user%last_Et_jac,user%At,SUBSET_NONZERO_PATTERN,ierr);CHKERRA(ierr)
+  call MatAXPY(A,-user%last_At_jac,user%At,SUBSET_NONZERO_PATTERN,ierr);CHKERRA(ierr)
+  user%last_At_jac = get_AL(t)
+  call MatAXPY(A,  user%last_At_jac,user%At,SUBSET_NONZERO_PATTERN,ierr);CHKERRA(ierr)
 end
 
-subroutine LinearIFunction(ts,t,X,Xdot,F,user,ierr)
-  ! we use the (arbitrary) user context to simply pass the matrix A
+subroutine TDLinearIFunction(ts,t,X,Xdot,F,user,ierr)
   use petsc
+  use td_type
   implicit none
-  
-  PetscScalar, parameter :: ONE = 1.d0
   TS ts
   PetscReal t
   Vec X,Xdot,F
-  Mat user
+  type(td_data) user
   PetscErrorCode ierr
-
-  ! we want to represent Xdot = A X in its implicit formulation, F = Xdot - A X
-  ! F = A X
-  call MatMult(user,X,F,ierr);CHKERRA(ierr)
+  PetscScalar, parameter :: MONE = -1.d0
+  
+  ! we want to represent Xdot = (A0 + E(t) At) X in its implicit formulation, F = Xdot - (A0 + E(t) At) X
+  ! F = (A0 + E(t) At) X
+  call TDHamiltRHSFunction(ts,t,X,F,user,ierr);CHKERRA(ierr)
   ! F = Xdot - F = Xdot - A X
-  call VecAYPX(F,-ONE,Xdot,ierr);CHKERRA(ierr)
-end subroutine LinearIFunction
+  call VecAYPX(F,MONE,Xdot,ierr);CHKERRA(ierr)
+end subroutine TDLinearIFunction
 
-subroutine LinearIJacobian(ts,t,X,Xdot,shift,J,Jpre,user,ierr)
-  ! we use the (arbitrary) user context to simply pass the matrix A
+subroutine TDLinearIJacobian(ts,t,X,Xdot,shift,J,Jpre,user,ierr)
   use petsc
+  use laserfields
+  use td_type
   implicit none
-
-  PetscScalar, parameter :: ONE = 1.d0
   TS ts
   PetscReal t,shift
   PetscScalar shift_scalar
   Vec X,Xdot
   Mat J,Jpre
-  Mat user
+  type(td_data) user
   PetscErrorCode ierr
-
-  ! should calculate Jacobian of F(t,X,W+a*X), equivalent to dF/dX + a*dF/dXdot
-  ! F = Xdot - A X -> dF/dX = -A, dF/dXdot = I
-  ! J = -A + a I
+  PetscScalar At
+  PetscScalar, parameter :: MONE = -1.d0
 
   shift_scalar = shift
-  call MatCopy(user,J,SAME_NONZERO_PATTERN,ierr);CHKERRA(ierr)
-  call MatScale(J,-ONE,ierr);CHKERRA(ierr)
+
+  ! should calculate Jacobian of F(t,X,W+a*X), equivalent to dF/dX + a*dF/dXdot
+  ! F = Xdot - (A0+E(t)*At)*X -> dF/dX = -(A0+E(t)*At), dF/dXdot = I
+  ! -> J = -(A0+E(t)*At) + a I
+
+  ! J = (A0+E(t)*At)
+  call MatCopy(user%A0,J,DIFFERENT_NONZERO_PATTERN,ierr);CHKERRA(ierr)
+  user%last_At_jac = get_AL(t)
+  call MatAXPY(J,user%last_At_jac,user%At,SUBSET_NONZERO_PATTERN,ierr);CHKERRA(ierr)
+
+  ! J = -(A0+E(t)*At) + shift I
+  call MatScale(J,MONE,ierr);CHKERRA(ierr)
   call MatShift(J,shift_scalar,ierr);CHKERRA(ierr)
   if (J /= Jpre) then
      call MatCopy(J,Jpre,SAME_NONZERO_PATTERN,ierr);CHKERRA(ierr)
   end if
-end subroutine LinearIJacobian
+end subroutine TDLinearIJacobian
