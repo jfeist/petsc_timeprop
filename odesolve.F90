@@ -2,11 +2,27 @@
 
 module td_type
   use petsc
+  use laserfields, only: get_EL, get_AL, get_ZL
   type td_data
     Mat A0, At
     Vec Atu
-    PetscScalar last_At_jac
+    PetscScalar last_field_in_jac
+    character :: gauge
   end type
+
+  contains
+    PetscReal function get_field(dat,t) result(F)
+      type(td_data), intent(in) :: dat
+      PetscReal, intent(in)     :: t
+      select case dat%gauge
+      case ("L")
+        F = get_EL(t)
+      case ("V")
+        F = get_AL(t)
+      case ("Z")
+        F = get_ZL(t)
+      end select
+    end
 end module
 
 PROGRAM main
@@ -25,6 +41,7 @@ PROGRAM main
   PetscErrorCode :: ierr
   PetscInt       :: steps
   PetscScalar    :: alpha
+  PetscBool      :: set
   integer        :: my_id, ii, ntimes
   double precision :: tt, tstart
   double precision, allocatable :: times(:)
@@ -37,6 +54,19 @@ PROGRAM main
   call MPI_COMM_RANK(PETSC_COMM_WORLD, my_id, ierr)
 
   if (my_id==0) write(6,*) 'time for initialization:', mpi_wtime() - tstart
+
+  call PetscOptionsGetString(PETSC_NULL_OPTIONS,PETSC_NULL_CHARACTER,'--gauge',user%gauge,set,ierr)
+  if (.not.set) user%gauge = "L"
+  select case user%gauge
+  case ("l","L")
+    user%gauge = "L"
+  case ("v","V")
+    user%gauge = "V"
+  case ("a","A")
+    user%gauge = "A"
+  case default
+    SETERRQ(PETSC_COMM_WORLD,10,"Option --gauge must be set to 'L' (length), 'V' (velocity), or 'A' (acceleration)!")
+  end select
 
   ! - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
   !  load the input from disk
@@ -56,8 +86,8 @@ PROGRAM main
 
   ! Jacobian
   call MatDuplicate(user%A0,MAT_COPY_VALUES,J,ierr);CHKERRA(ierr)
-  user%last_At_jac = 1.d0
-  call MatAXPY(J,user%last_At_jac,user%At,DIFFERENT_NONZERO_PATTERN,ierr);CHKERRA(ierr)
+  user%last_field_in_jac = 1.d0
+  call MatAXPY(J,user%last_field_in_jac,user%At,DIFFERENT_NONZERO_PATTERN,ierr);CHKERRA(ierr)
 
   if (my_id==0) write(0,*) 'time for loading matrices:', mpi_wtime() - tstart
 
@@ -163,26 +193,24 @@ END PROGRAM main
 ! ctx	- [optional] user-defined function context
 subroutine TDHamiltRHSFunction(ts,t,u,F,user,ierr)
   use td_type
-  use laserfields, only: get_AL
   implicit none
-  ! evaluate F = (A0 + E(t)*At)*u
+  ! evaluate F = (A0 + field(t)*At)*u
   TS ts
   PetscReal t
   Vec u, F
   type(td_data) user
   PetscErrorCode ierr
-  PetscScalar At
+  PetscScalar F
 
-  At = get_Al(t)
+  field = get_field(user,t)
   call MatMult(user%A0,u,F,ierr);CHKERRA(ierr)
   call MatMult(user%At,u,user%Atu,ierr);CHKERRA(ierr)
-  call VecAXPY(F,At,user%Atu,ierr);CHKERRA(ierr)
+  call VecAXPY(F,field,user%Atu,ierr);CHKERRA(ierr)
 end
 
 ! PetscErrorCode func (TS ts,PetscReal t,Vec u,Mat A,Mat B,void *ctx);
 subroutine TDHamiltJacFunction(ts,t,u,A,B,user,ierr)
   use td_type
-  use laserfields, only: get_AL
   implicit none
   ! evaluate F = (A0 + E(t)*At)*u
   TS ts
@@ -192,9 +220,9 @@ subroutine TDHamiltJacFunction(ts,t,u,A,B,user,ierr)
   type(td_data) user
   PetscErrorCode ierr
 
-  call MatAXPY(A,-user%last_At_jac,user%At,SUBSET_NONZERO_PATTERN,ierr);CHKERRA(ierr)
-  user%last_At_jac = get_AL(t)
-  call MatAXPY(A,  user%last_At_jac,user%At,SUBSET_NONZERO_PATTERN,ierr);CHKERRA(ierr)
+  call MatAXPY(A,-user%last_field_in_jac,user%At,SUBSET_NONZERO_PATTERN,ierr);CHKERRA(ierr)
+  user%last_field_in_jac = get_field(user,t)
+  call MatAXPY(A, user%last_field_in_jac,user%At,SUBSET_NONZERO_PATTERN,ierr);CHKERRA(ierr)
 end
 
 subroutine TDLinearIFunction(ts,t,X,Xdot,F,user,ierr)
@@ -217,7 +245,6 @@ end subroutine TDLinearIFunction
 
 subroutine TDLinearIJacobian(ts,t,X,Xdot,shift,J,Jpre,user,ierr)
   use petsc
-  use laserfields
   use td_type
   implicit none
   TS ts
@@ -238,8 +265,8 @@ subroutine TDLinearIJacobian(ts,t,X,Xdot,shift,J,Jpre,user,ierr)
 
   ! J = (A0+E(t)*At)
   call MatCopy(user%A0,J,DIFFERENT_NONZERO_PATTERN,ierr);CHKERRA(ierr)
-  user%last_At_jac = get_AL(t)
-  call MatAXPY(J,user%last_At_jac,user%At,SUBSET_NONZERO_PATTERN,ierr);CHKERRA(ierr)
+  user%last_field_in_jac = get_field(t)
+  call MatAXPY(J,user%last_field_in_jac,user%At,SUBSET_NONZERO_PATTERN,ierr);CHKERRA(ierr)
 
   ! J = -(A0+E(t)*At) + shift I
   call MatScale(J,MONE,ierr);CHKERRA(ierr)
