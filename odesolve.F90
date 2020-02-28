@@ -14,7 +14,7 @@ module td_type
     PetscReal function get_field(dat,t) result(F)
       type(td_data), intent(in) :: dat
       PetscReal, intent(in)     :: t
-      select case dat%gauge
+      select case (dat%gauge)
       case ("L")
         F = get_EL(t)
       case ("V")
@@ -43,6 +43,7 @@ PROGRAM main
   PetscScalar    :: alpha
   PetscBool      :: set
   integer        :: my_id, ii, ntimes
+  character(len=3) :: gg
   double precision :: tt, tstart
   double precision, allocatable :: times(:)
 
@@ -55,9 +56,10 @@ PROGRAM main
 
   if (my_id==0) write(6,*) 'time for initialization:', mpi_wtime() - tstart
 
-  call PetscOptionsGetString(PETSC_NULL_OPTIONS,PETSC_NULL_CHARACTER,'--gauge',user%gauge,set,ierr)
-  if (.not.set) user%gauge = "L"
-  select case user%gauge
+  user%gauge = "L"
+  call PetscOptionsGetString(PETSC_NULL_OPTIONS,PETSC_NULL_CHARACTER,'--gauge',gg,set,ierr);CHKERRA(ierr)
+  if (set) user%gauge = gg(1:1)
+  select case (user%gauge)
   case ("l","L")
     user%gauge = "L"
   case ("v","V")
@@ -65,7 +67,8 @@ PROGRAM main
   case ("a","A")
     user%gauge = "A"
   case default
-    SETERRQ(PETSC_COMM_WORLD,10,"Option --gauge must be set to 'L' (length), 'V' (velocity), or 'A' (acceleration)!")
+    call PetscError(PETSC_COMM_WORLD,10,0,"Option --gauge must be set to 'L' (length), 'V' (velocity), or 'A' (acceleration)!")
+    CHKERRA(10)
   end select
 
   ! - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -84,11 +87,6 @@ PROGRAM main
   call MatCreateVecs(user%A0,PETSC_NULL_VEC,user%Atu,ierr);CHKERRA(ierr)
   call VecSetFromOptions(user%Atu,ierr);CHKERRA(ierr)
 
-  ! Jacobian
-  call MatDuplicate(user%A0,MAT_COPY_VALUES,J,ierr);CHKERRA(ierr)
-  user%last_field_in_jac = 1.d0
-  call MatAXPY(J,user%last_field_in_jac,user%At,DIFFERENT_NONZERO_PATTERN,ierr);CHKERRA(ierr)
-
   if (my_id==0) write(0,*) 'time for loading matrices:', mpi_wtime() - tstart
 
   call TSCreate(PETSC_COMM_WORLD,ts,ierr);CHKERRA(ierr)
@@ -96,11 +94,18 @@ PROGRAM main
   call TSSetSolution(ts,u0,ierr);CHKERRA(ierr)
   call TSSetProblemType(ts,TS_LINEAR,ierr);CHKERRA(ierr)
   call TSSetRHSFunction(ts,PETSC_NULL_VEC,TDHamiltRHSFunction,user,ierr);CHKERRA(ierr)
+
+  ! Jacobian
+  !call MatDuplicate(user%A0,MAT_COPY_VALUES,J,ierr);CHKERRA(ierr)
+  !user%last_field_in_jac = 1.d0
+  !call MatAXPY(J,user%last_field_in_jac,user%At,DIFFERENT_NONZERO_PATTERN,ierr);CHKERRA(ierr)
   !call TSSetRHSJacobian(ts,J,J,TDHamiltJacFunction,user,ierr);CHKERRA(ierr)
   !call TSRHSJacobianSetReuse(ts,PETSC_TRUE,ierr);CHKERRA(ierr)
+
   !call TSSetIFunction(ts,PETSC_NULL_VEC,TDLinearIFunction,user,ierr);CHKERRA(ierr)
   !call TSSetIFunction(ts,PETSC_NULL_VEC,TSComputeIFunctionLinear,user,ierr);CHKERRA(ierr)
   !call TSSetIJacobian(ts,J,J,TDLinearIJacobian,user,ierr);CHKERRA(ierr)
+
   call TSSetExactFinalTime(ts,TS_EXACTFINALTIME_MATCHSTEP,ierr);CHKERRA(ierr)
   call TSSetFromOptions(ts,ierr);CHKERRA(ierr)
 
@@ -200,7 +205,7 @@ subroutine TDHamiltRHSFunction(ts,t,u,F,user,ierr)
   Vec u, F
   type(td_data) user
   PetscErrorCode ierr
-  PetscScalar F
+  PetscScalar field
 
   field = get_field(user,t)
   call MatMult(user%A0,u,F,ierr);CHKERRA(ierr)
@@ -265,7 +270,7 @@ subroutine TDLinearIJacobian(ts,t,X,Xdot,shift,J,Jpre,user,ierr)
 
   ! J = (A0+E(t)*At)
   call MatCopy(user%A0,J,DIFFERENT_NONZERO_PATTERN,ierr);CHKERRA(ierr)
-  user%last_field_in_jac = get_field(t)
+  user%last_field_in_jac = get_field(user,t)
   call MatAXPY(J,user%last_field_in_jac,user%At,SUBSET_NONZERO_PATTERN,ierr);CHKERRA(ierr)
 
   ! J = -(A0+E(t)*At) + shift I
