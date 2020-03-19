@@ -12,6 +12,8 @@ PROGRAM main
   TS             :: ts
   PetscErrorCode :: ierr
   PetscInt       :: steps
+  PetscBool      :: is_hamiltonian
+  PetscScalar, parameter :: IU = (0,1)
   integer        :: my_id, ii
   double precision :: tt, tstart
   double precision, allocatable :: times(:)
@@ -25,6 +27,9 @@ PROGRAM main
 
   if (my_id==0) write(6,*) 'time for initialization:', mpi_wtime() - tstart
 
+  call PetscOptionsHasName(PETSC_NULL_OPTIONS,PETSC_NULL_CHARACTER,"--is_hamiltonian",is_hamiltonian,ierr);CHKERRA(ierr)
+  if (my_id==0 .and. is_hamiltonian) write(6,*) "input matrix is Hamiltonian, multiplying by -i!"
+
   ! - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
   !  load the matrix from disk
   ! - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -33,6 +38,10 @@ PROGRAM main
 
   call PetscViewerBinaryOpen(PETSC_COMM_WORLD,"A.petsc",FILE_MODE_READ,binv,ierr);CHKERRA(ierr)
   call MatLoad(A,binv,ierr);CHKERRA(ierr)
+  if (is_hamiltonian) then
+     ! A is actually a Hamiltonian H, we want A = -i H
+     call MatScale(A,-IU,ierr);CHKERRA(ierr)
+  end if
   call PetscViewerDestroy(binv,ierr);CHKERRA(ierr)
   call MatDuplicate(A,MAT_COPY_VALUES,J,ierr);CHKERRA(ierr)
 
